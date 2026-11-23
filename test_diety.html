@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>TEST diety – SUPTel – Diéty a cestovné príkazy</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css"/>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config_test.js"></script>
+<style>
+:root{
+  --primary:#1f5fa8;--primary-dark:#154a85;--bg:#f4f6f9;
+  --card:#fff;--border:#d7dde5;--text:#1c2733;--muted:#6b7785;
+  --error:#c0392b;--error-bg:#fdecea;--success:#1e7e34;--success-bg:#e6f4ea;--warn-bg:#fff8e6;--warn:#8a5a00;--radius:8px;
+  /* Pozadie prihlasovacej obrazovky – rovnaký vzor ako ostatné appky, tu v jantárovej */
+  --login-bg-a:#fdf6e9; --login-bg-b:#f4d9a6;
+  --login-wave-1:rgba(204,122,0,.28); --login-wave-2:rgba(255,255,255,.55);
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px;}
+.hidden{display:none !important;}
+header.topbar{display:flex;align-items:center;gap:18px;background:var(--primary);color:#fff;padding:0 16px;height:52px;position:sticky;top:0;z-index:10;}
+header.topbar h1{font-size:16px;font-weight:600;white-space:nowrap;}
+header.topbar nav{display:flex;gap:2px;flex:1;}
+header.topbar nav button{background:transparent;border:0;color:#d6e4f5;padding:8px 12px;font-weight:500;border-radius:6px;}
+header.topbar nav button:hover{background:rgba(255,255,255,.12);color:#fff;}
+header.topbar nav button.on{background:rgba(255,255,255,.2);color:#fff;font-weight:600;}
+.user-info{font-size:13px;display:flex;align-items:center;gap:10px;white-space:nowrap;}
+.user-info button{padding:5px 10px;font-size:12px;background:transparent;border-color:rgba(255,255,255,.6);}
+.engine{font-size:12px;display:flex;align-items:center;gap:6px;opacity:.9}
+.dot{width:8px;height:8px;border-radius:50%;background:#f0b429;display:inline-block}
+.dot.ok{background:#5cd68a}.dot.err{background:#ff6b6b}
+main{max-width:1180px;margin:20px auto 60px;padding:0 16px;}
+h2{font-size:20px;margin-bottom:4px;}
+.sub{color:var(--muted);margin-bottom:16px;}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:14px;}
+.card h3{font-size:15px;margin-bottom:10px;}
+label{display:block;font-size:12px;font-weight:600;margin-bottom:3px;color:var(--muted);}
+input,select{width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;font-family:inherit;background:#fff;color:var(--text);}
+input:focus,select:focus{outline:2px solid #a9c8ec;border-color:var(--primary);}
+button{cursor:pointer;border:1px solid var(--primary);background:var(--primary);color:#fff;padding:8px 14px;border-radius:var(--radius);font-size:13px;font-weight:600;font-family:inherit;display:inline-flex;align-items:center;gap:6px;}
+button:hover{background:var(--primary-dark);}
+button.secondary{background:#fff;color:var(--primary);}
+button.secondary:hover{background:#eef3fa;}
+button.sm{padding:5px 10px;font-size:12px;}
+button:disabled{opacity:.5;cursor:not-allowed;}
+.banner{padding:10px 12px;border-radius:var(--radius);margin-bottom:12px;font-size:13px;}
+.banner.error{background:var(--error-bg);color:var(--error);border:1px solid #f3c1bb;}
+.banner.ok{background:var(--success-bg);color:var(--success);border:1px solid #bfe1c9;}
+.banner.warn{background:var(--warn-bg);color:var(--warn);border:1px solid #f1dca6;}
+.muted{color:var(--muted);font-size:12.5px;}
+table{border-collapse:collapse;width:100%;}
+th{background:#eef2f7;text-align:left;font-weight:600;color:#38475a;padding:7px 8px;border-bottom:1px solid var(--border);white-space:nowrap;font-size:13px;}
+td{padding:6px 8px;border-bottom:1px solid #edf0f4;vertical-align:middle;}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;}
+tr.sum td{font-weight:700;background:#f7f9fb;border-top:2px solid var(--border);}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11.5px;background:#eef2f7;color:#38475a;white-space:nowrap;}
+.badge.t{background:#e3edf9;color:var(--primary);} .badge.n{background:#fbe9d7;color:#8a4b0b;}
+
+/* login */
+#login-view{min-height:100vh;display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(1100px 750px at 12% 10%, var(--login-wave-2), transparent 55%),
+    linear-gradient(128deg, var(--login-wave-1) 0%, transparent 52%),
+    linear-gradient(155deg, var(--login-bg-a) 0%, var(--login-bg-b) 100%);}
+#login-view .card{max-width:360px;width:100%;padding:24px;}
+#login-view h2{text-align:center;margin-bottom:4px;}
+#login-view .sub{text-align:center;}
+#login-form{background:#eef2f7;padding:14px;border-radius:8px;}
+#login-form label{margin-top:8px;}
+
+/* spracovanie */
+.drop{display:block;border:2px dashed #9fb6cc;border-radius:12px;background:#f9fbfd;padding:42px 20px;text-align:center;cursor:pointer;transition:.15s;}
+.drop:hover,.drop.over{border-color:var(--primary);background:#eef4fa;}
+.drop i{font-size:42px;color:var(--primary);}
+.drop b{display:block;font-size:16px;margin:8px 0 4px;}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px;}
+.step{background:#f5f7fa;border-radius:8px;padding:10px 12px;font-size:13px;}
+.step span{display:inline-flex;width:20px;height:20px;border-radius:50%;background:var(--primary);color:#fff;font-size:11px;align-items:center;justify-content:center;margin-right:6px;font-weight:700;}
+.busy{display:flex;align-items:center;gap:10px;color:var(--primary);font-weight:600;padding:14px 0 0;}
+.spin{width:18px;height:18px;border:3px solid #cfe0f3;border-top-color:var(--primary);border-radius:50%;animation:sp 1s linear infinite;}
+@keyframes sp{to{transform:rotate(360deg)}}
+.osoba{border:1px solid #f0d9a8;background:#fffcf3;border-radius:10px;padding:14px 16px;margin-bottom:12px;}
+.osoba h4{font-size:16px;margin-bottom:10px;display:flex;gap:8px;align-items:center;}
+.typy{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
+.typy label{display:flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:8px;padding:7px 11px;background:#fff;color:var(--text);font-size:13px;font-weight:500;cursor:pointer;margin:0;}
+.typy input{width:auto;margin:0;}
+.typy label:has(input:checked){border-color:var(--primary);background:#e3edf9;font-weight:600;}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px;}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.hint{font-size:11.5px;color:var(--muted);margin-top:3px;}
+.kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px;}
+.kpi div{background:#fff;border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;}
+.kpi b{display:block;font-size:21px;color:var(--primary);margin-top:2px;}
+.dl{display:flex;gap:8px;flex-wrap:wrap;}
+.tw{overflow-x:auto;}
+#t-zam td{padding:3px 3px;} #t-zam input,#t-zam select{padding:5px 6px;font-size:12.5px;}
+tr.del td{opacity:.35;}
+.legend{display:grid;grid-template-columns:1fr 1fr;gap:5px 24px;font-size:12.5px;color:var(--muted);}
+.legend b{color:var(--text);}
+.savebar{position:sticky;bottom:0;background:linear-gradient(transparent,var(--bg) 30%);padding:14px 0 6px;display:flex;gap:10px;align-items:center;}
+.err-txt{color:var(--error);font-weight:600;}
+details.kontrola summary{cursor:pointer;list-style:revert;}
+.kgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px 18px;margin-top:12px;}
+.kmeno{font-weight:600;margin-bottom:3px;}
+.kgrid ul{list-style:none;}
+.kgrid li{font-size:12.5px;padding:2px 0;display:flex;gap:6px;}
+.kgrid li.chyba{color:#9c2a00;} .kgrid li.info{color:var(--muted);}
+.seg{display:inline-flex;border:1px solid var(--primary);border-radius:8px;overflow:hidden;}
+.seg button{border:0;border-radius:0;background:#fff;color:var(--primary);}
+.seg button.on{background:var(--primary);color:#fff;}
+table.arch td,table.arch th{padding:5px 7px;font-size:12.5px;}
+.zdroj{display:inline-block;margin-left:4px;font-size:9.5px;font-weight:700;padding:0 4px;border-radius:4px;background:#e1e6ec;color:#4a5866;vertical-align:middle;}
+.zdroj.fin{background:#d9f0e1;color:#1e7e34;}
+@media(max-width:800px){.steps,.kpi,.g4{grid-template-columns:1fr 1fr}header.topbar h1{display:none}}
+</style>
+</head>
+<body>
+
+<div id="login-view">
+  <div class="card">
+    <h2>SUPTel – Diéty</h2>
+    <p class="sub">Cestovné príkazy SR a ČR z dochádzky</p>
+    <div id="login-error" class="banner error hidden"></div>
+    <form id="login-form">
+      <label>E-mail</label>
+      <input type="email" id="login-email" required autocomplete="username"/>
+      <label>Heslo</label>
+      <input type="password" id="login-password" required autocomplete="current-password"/>
+      <br/><br/>
+      <button type="submit" id="login-btn" style="width:100%;justify-content:center;">Prihlásiť sa</button>
+    </form>
+    <p class="muted" style="text-align:center;margin-top:10px">Rovnaké prihlásenie ako do Objednávok.</p>
+  </div>
+</div>
+
+<div id="app-view" class="hidden">
+  <header class="topbar">
+    <h1>SUPTel – Diéty</h1>
+    <nav>
+      <button data-view="spracovat" class="on"><i class="ti ti-file-spreadsheet"></i> Spracovať mesiac</button>
+      <button data-view="zamestnanci"><i class="ti ti-users"></i> Zamestnanci</button>
+      <button data-view="sadzby"><i class="ti ti-coin-euro"></i> Sadzby a časy</button>
+      <button data-view="archiv"><i class="ti ti-archive"></i> Archív</button>
+    </nav>
+    <div class="engine" id="engine-status" title="Výpočtový modul"><span class="dot"></span><span>načítavam…</span></div>
+    <div class="user-info"><span id="user-name"></span><button id="logout-btn"><i class="ti ti-logout"></i> Odhlásiť</button></div>
+  </header>
+  <main>
+    <div id="msg"></div>
+    <section id="v-spracovat"></section>
+    <section id="v-zamestnanci" class="hidden"></section>
+    <section id="v-sadzby" class="hidden"></section>
+    <section id="v-archiv" class="hidden"></section>
+  </main>
+</div>
+
+<script src="app_test.js"></script>
+</body>
+</html>
