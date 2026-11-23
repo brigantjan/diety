@@ -42,3 +42,8 @@ def zabal(out_dir, nazov):
         for n in sorted(os.listdir(out_dir)):
             z.write(os.path.join(out_dir, n), n)
     return path
+
+
+def nacitaj_suhrn(path):
+    """Súhrn z finálneho SR/ČR súboru (uloženého v Exceli) – pre archív."""
+    return json.dumps(engine.nacitaj_suhrn(path), ensure_ascii=False)

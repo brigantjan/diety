@@ -44,6 +44,48 @@ const Store = {
   }
 };
 
+// Archív mesiacov (súčty po ľuďoch) – tabuľka diety_archiv
+const Archiv = {
+  async nacitaj() {
+    if (LOCAL_MODE) return JSON.parse(localStorage.getItem('diety_archiv') || '[]');
+    const { data, error } = await sb.from('diety_archiv').select('rok,mesiac,data,updated_at').order('rok').order('mesiac');
+    if (error) throw error;
+    return data || [];
+  },
+  async uloz(rok, mesiac, data) {
+    if (LOCAL_MODE) {
+      const all = JSON.parse(localStorage.getItem('diety_archiv') || '[]').filter(x => !(x.rok === rok && x.mesiac === mesiac));
+      all.push({ rok, mesiac, data, updated_at: new Date().toISOString() });
+      localStorage.setItem('diety_archiv', JSON.stringify(all));
+      return;
+    }
+    const { error } = await sb.from('diety_archiv').upsert({ rok, mesiac, data }, { onConflict: 'rok,mesiac' });
+    if (error) throw error;
+  }
+};
+
+async function ulozDoArchivu(res) {
+  const rows = await Archiv.nacitaj();
+  const stary = rows.find(x => x.rok === res.rok && x.mesiac === res.mesiac);
+  const data = structuredClone(stary ? stary.data : {});
+  const cas = new Date().toISOString();
+  const z = { sr: {}, cz: {} };
+  for (const x of res.prehlad) {
+    z.sr[x[0]] = { spolu: x[7], dni: x[3] };
+    if (x[8]) z.cz[x[0]] = { spolu: x[9], dni: x[8] };
+  }
+  const prepisane = [];
+  for (const druh of ['sr', 'cz']) {
+    if (data[druh] && data[druh].zdroj === 'finálny súbor') continue;   // finálne (upravené) súbory majú prednosť
+    data[druh] = { zdroj: 'výpočet', cas, ludia: z[druh] };
+    prepisane.push(druh);
+  }
+  if (prepisane.length) await Archiv.uloz(res.rok, res.mesiac, data);
+  return prepisane.length === 2 ? 'uložené do archívu'
+       : prepisane.length ? 'uložené do archívu (druhý príkaz už má v archíve finálny súbor)'
+       : 'archív sa nemenil – tento mesiac už má nahraté finálne súbory';
+}
+
 async function ulozNastavenia(newData) {
   const v = await Store.save(newData);
   state.data = newData;
@@ -153,11 +195,12 @@ function sprava(text, typ = 'ok') {
 
 function prepni(view) {
   document.querySelectorAll('header nav button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
-  for (const v of ['spracovat', 'zamestnanci', 'sadzby']) el('v-' + v).classList.toggle('hidden', v !== view);
+  for (const v of ['spracovat', 'zamestnanci', 'sadzby', 'archiv']) el('v-' + v).classList.toggle('hidden', v !== view);
   sprava('');
   if (view === 'spracovat') (state.vysledok ? renderVysledok() : renderUpload());
   if (view === 'zamestnanci') renderZamestnanci();
   if (view === 'sadzby') renderSadzby();
+  if (view === 'archiv') renderArchiv();
 }
 document.querySelectorAll('header nav button').forEach(b => b.addEventListener('click', () => prepni(b.dataset.view)));
 
@@ -333,6 +376,8 @@ async function generuj() {
   state.urls.push(zipUrl);
   res.zip = { nazov: zipPath.split('/').pop(), url: zipUrl };
   res.cas = new Date().toLocaleString('sk-SK');
+  try { res.archiv = await ulozDoArchivu(res); }
+  catch (e) { console.error(e); res.archiv = 'do archívu sa nepodarilo uložiť: ' + (e.message || e); res.archivChyba = true; }
   state.vysledok = res;
   renderVysledok();
 }
@@ -344,7 +389,7 @@ function renderVysledok() {
   const nazov = n => n.startsWith('SR') ? 'SR príkaz' : n.startsWith('CR') ? 'ČR príkaz' : 'Kontrolný prehľad';
   el('v-spracovat').innerHTML = `
     <h2>Diéty – ${esc(r.mesiac_txt)}</h2>
-    <p class="sub">Spracované ${esc(r.cas)} zo súboru ${esc(state.dochName)}.</p>
+    <p class="sub">Spracované ${esc(r.cas)} zo súboru ${esc(state.dochName)} · <span class="${r.archivChyba ? 'err-txt' : ''}"><i class="ti ti-archive"></i> ${esc(r.archiv || '')}</span></p>
     <div class="kpi">
       <div><span class="muted">Ľudí s cestovným príkazom</span><b>${r.prehlad.length}</b></div>
       <div><span class="muted">Diéty SR spolu</span><b>${fmtEur(sr)} €</b></div>
@@ -357,6 +402,7 @@ function renderVysledok() {
       </div>
       <p class="muted" style="margin-top:10px">Jednodňové cesty do ČR majú predvyplnené časy 7:00–16:30 – prepíš ich podľa GPS, suma v Kč sa v Exceli prepočíta sama.</p>
     </div>
+    ${renderKontrola(r.kontrola || [])}
     ${r.warnings.length ? `<div class="banner warn"><b>Upozornenia (${r.warnings.length})</b><ul style="margin:6px 0 0 18px">${r.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul></div>` : ''}
     <div class="card tw">
       <h3>Prehľad po ľuďoch</h3>
@@ -383,6 +429,108 @@ function renderVysledok() {
       await generuj();
     } catch (e) { busy(''); sprava(pyChyba(e), 'error'); }
   });
+}
+
+function renderKontrola(k) {
+  if (!k.length) return `<div class="banner ok"><i class="ti ti-circle-check"></i> Kontrola dochádzky: bez zistení.</div>`;
+  const chyby = k.filter(x => x.druh === 'chyba').length;
+  const skupiny = [];
+  for (const x of k) {
+    const key = x.meno || 'Celá dochádzka';
+    let g = skupiny.find(s => s.meno === key);
+    if (!g) { g = { meno: key, polozky: [] }; skupiny.push(g); }
+    g.polozky.push(x);
+  }
+  return `<details class="card kontrola" ${chyby ? 'open' : ''}>
+    <summary><b>Kontrola dochádzky</b> – ${chyby ? `<span class="err-txt">${chyby} na preverenie</span>` : ''}${chyby && k.length > chyby ? ', ' : ''}${k.length > chyby ? `${k.length - chyby} informácií` : ''}
+      <span class="muted">(výpočet prebehol – ak niečo opravíš v dochádzke, nahraj ju znova)</span></summary>
+    <div class="kgrid">${skupiny.map(g => `<div><div class="kmeno">${esc(g.meno)}</div><ul>${g.polozky.map(x =>
+      `<li class="${x.druh}"><i class="ti ${x.druh === 'chyba' ? 'ti-alert-triangle' : 'ti-info-circle'}"></i> ${esc(x.text)}</li>`).join('')}</ul></div>`).join('')}</div>
+  </details>`;
+}
+
+// ---------------------------------------------------------------------
+// Archív
+// ---------------------------------------------------------------------
+const MES = ['jan', 'feb', 'mar', 'apr', 'máj', 'jún', 'júl', 'aug', 'sep', 'okt', 'nov', 'dec'];
+const archivStav = { rok: null, druh: 'sr' };
+
+async function renderArchiv() {
+  const box = el('v-archiv');
+  box.innerHTML = `<h2>Archív</h2><p class="sub">Načítavam…</p>`;
+  let rows;
+  try { rows = await Archiv.nacitaj(); }
+  catch (e) { box.innerHTML = `<h2>Archív</h2><div class="banner error">Archív sa nepodarilo načítať: ${esc(e.message || e)}</div>`; return; }
+  const roky = [...new Set(rows.map(x => x.rok))].sort((a, b) => b - a);
+  if (!archivStav.rok || !roky.includes(archivStav.rok)) archivStav.rok = roky[0] || new Date().getFullYear();
+  const rok = archivStav.rok, druh = archivStav.druh;
+  const mesiace = Array(12).fill(null);
+  rows.filter(x => x.rok === rok).forEach(x => mesiace[x.mesiac - 1] = x.data[druh] || null);
+  const mena = [...new Set(mesiace.flatMap(m => m ? Object.keys(m.ludia) : []))].sort((a, b) => a.localeCompare(b, 'sk'));
+  const jed = druh === 'sr' ? '€' : 'Kč', f = druh === 'sr' ? fmtEur : fmtNum;
+  const sumM = mesiace.map(m => m ? Object.values(m.ludia).reduce((a, x) => a + x.spolu, 0) : null);
+  const tabulka = mena.length ? `
+    <div class="card tw"><table class="arch">
+      <tr><th>Meno</th>${MES.map((m, i) => `<th class="n">${m}${mesiace[i] ? `<span class="zdroj ${mesiace[i].zdroj === 'finálny súbor' ? 'fin' : ''}" title="${esc(mesiace[i].zdroj)}">${mesiace[i].zdroj === 'finálny súbor' ? 'F' : 'V'}</span>` : ''}</th>`).join('')}<th class="n">Spolu ${jed}</th></tr>
+      ${mena.map(n => {
+        const v = mesiace.map(m => m && m.ludia[n] ? m.ludia[n].spolu : null);
+        return `<tr><td>${esc(n)}</td>${v.map(x => `<td class="n">${x === null ? '' : f(x)}</td>`).join('')}<td class="n"><b>${f(v.reduce((a, x) => a + (x || 0), 0))}</b></td></tr>`;
+      }).join('')}
+      <tr class="sum"><td>Spolu</td>${sumM.map(x => `<td class="n">${x === null ? '' : f(x)}</td>`).join('')}<td class="n">${f(sumM.reduce((a, x) => a + (x || 0), 0))}</td></tr>
+    </table>
+    <p class="muted" style="margin-top:8px"><span class="zdroj">V</span> = podľa výpočtu z dochádzky &nbsp; <span class="zdroj fin">F</span> = podľa finálneho súboru (aj s tvojimi ručnými úpravami, napr. GPS časy)</p></div>`
+    : `<div class="card muted">Za rok ${rok} zatiaľ nie je v archíve nič. Mesiac sa uloží automaticky pri každom spracovaní dochádzky.</div>`;
+  box.innerHTML = `
+    <h2>Archív</h2>
+    <p class="sub">Súčty diét po ľuďoch za jednotlivé mesiace.</p>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+      <select id="a-rok" style="width:auto">${(roky.length ? roky : [rok]).map(r => `<option ${r === rok ? 'selected' : ''}>${r}</option>`).join('')}</select>
+      <div class="seg"><button class="${druh === 'sr' ? 'on' : ''}" data-d="sr">Diéty SR (€)</button><button class="${druh === 'cz' ? 'on' : ''}" data-d="cz">Diéty ČR (Kč)</button></div>
+    </div>
+    ${tabulka}
+    <div class="card">
+      <h3>Aktualizovať z finálnych súborov</h3>
+      <p class="muted" style="margin-bottom:10px">Keď v stiahnutom SR alebo ČR príkaze niečo upravíš (napr. GPS časy) a uložíš ho v Exceli, nahraj ho sem – archív sa prepíše skutočnými sumami. Môžeš nahrať oba súbory naraz.</p>
+      <label class="drop" id="a-drop" style="padding:22px"><i class="ti ti-file-upload" style="font-size:30px"></i><b style="font-size:14px">Pretiahni sem SR / ČR príkaz</b><input type="file" id="a-subor" accept=".xlsx" multiple hidden></label>
+      <div id="busy" class="busy hidden"><div class="spin"></div><span id="busy-txt"></span></div>
+    </div>`;
+  el('a-rok').addEventListener('change', e => { archivStav.rok = +e.target.value; renderArchiv(); });
+  box.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => { archivStav.druh = b.dataset.d; renderArchiv(); }));
+  const inp = el('a-subor'), drop = el('a-drop');
+  inp.addEventListener('change', () => inp.files.length && nahrajFinalne([...inp.files]));
+  ['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', e => e.dataTransfer.files.length && nahrajFinalne([...e.dataTransfer.files]));
+}
+
+async function nahrajFinalne(files) {
+  sprava('');
+  try {
+    busy('Pripravujem výpočtový modul…');
+    await startPy();
+    const rows = await Archiv.nacitaj();
+    const hotove = [];
+    for (const file of files) {
+      busy('Čítam ' + file.name + '…');
+      state.py.FS.writeFile('/tmp/finalny.xlsx', new Uint8Array(await file.arrayBuffer()));
+      let r;
+      try { r = JSON.parse(state.api.nacitaj_suhrn('/tmp/finalny.xlsx')); }
+      catch (e) { throw new Error(file.name + ': ' + pyChyba(e)); }
+      const druh = r.druh === 'CZ' ? 'cz' : 'sr';
+      let row = rows.find(x => x.rok === r.rok && x.mesiac === r.mesiac);
+      if (!row) { row = { rok: r.rok, mesiac: r.mesiac, data: {} }; rows.push(row); }
+      row.data[druh] = { zdroj: 'finálny súbor', subor: file.name, cas: new Date().toISOString(),
+                         ludia: Object.fromEntries(r.ludia.map(x => [x.meno, { spolu: x.spolu, dni: x.dni }])) };
+      await Archiv.uloz(r.rok, r.mesiac, row.data);
+      hotove.push(`${druh === 'sr' ? 'SR' : 'ČR'} ${MES[r.mesiac - 1]} ${r.rok}`);
+      archivStav.rok = r.rok; archivStav.druh = druh;
+    }
+    await renderArchiv();
+    sprava('Archív aktualizovaný z finálnych súborov: ' + hotove.join(', ') + '.');
+  } catch (e) {
+    busy('');
+    sprava(e.message || String(e), 'error');
+  }
 }
 
 // ---------------------------------------------------------------------

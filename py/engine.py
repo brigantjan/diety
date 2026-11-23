@@ -575,6 +575,212 @@ def hodiny(d):
     return max(0, to_min(d['pri']) - to_min(d['odch'])) / 60
 
 
+# ------------------------------------------------------------------ sviatky a kontrola dochádzky
+def _velka_noc(rok):
+    a, b, c = rok % 19, rok // 100, rok % 100
+    d, e = b // 4, b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = c // 4, c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    mes = (h + l - 7 * m + 114) // 31
+    den = ((h + l - 7 * m + 114) % 31) + 1
+    return dt.date(rok, mes, den)
+
+
+def dni_pracovneho_pokoja(rok):
+    """Dni pracovného pokoja v SR (zákon 241/1993 v znení konsolidačných zmien)."""
+    vn = _velka_noc(rok)
+    d = {
+        dt.date(rok, 1, 1): 'Deň vzniku SR', dt.date(rok, 1, 6): 'Zjavenie Pána',
+        vn - dt.timedelta(days=2): 'Veľký piatok', vn + dt.timedelta(days=1): 'Veľkonočný pondelok',
+        dt.date(rok, 5, 1): 'Sviatok práce', dt.date(rok, 7, 5): 'Sviatok sv. Cyrila a Metoda',
+        dt.date(rok, 8, 29): 'Výročie SNP', dt.date(rok, 11, 1): 'Sviatok všetkých svätých',
+        dt.date(rok, 12, 24): 'Štedrý deň', dt.date(rok, 12, 25): 'Prvý sviatok vianočný',
+        dt.date(rok, 12, 26): 'Druhý sviatok vianočný',
+    }
+    if rok != 2026:                       # v roku 2026 dočasne nie sú dňami pracovného pokoja
+        d[dt.date(rok, 5, 8)] = 'Deň víťazstva nad fašizmom'
+        d[dt.date(rok, 9, 15)] = 'Sedembolestná Panna Mária'
+    if rok <= 2023:
+        d[dt.date(rok, 9, 1)] = 'Deň Ústavy SR'
+    if rok <= 2024:
+        d[dt.date(rok, 11, 17)] = 'Deň boja za slobodu a demokraciu'
+    if rok <= 2025:
+        d[dt.date(rok, 10, 28)] = 'Deň vzniku česko-slovenského štátu'
+    return d
+
+
+ABSENCIE = {'D', 'P', 'PNU', 'OCR', 'PO', 'A', 'Z', 'MD', 'RP', 'PZ'}
+DNI_TYZDNA = ['pondelok', 'utorok', 'streda', 'štvrtok', 'piatok', 'sobota', 'nedeľa']
+
+
+def _rozsahy(dni):
+    """[3,4,5,9] -> '3.–5., 9.'"""
+    out, i = [], 0
+    while i < len(dni):
+        j = i
+        while j + 1 < len(dni) and dni[j + 1] == dni[j] + 1:
+            j += 1
+        out.append(f'{dni[i]}.' if i == j else f'{dni[i]}.–{dni[j]}.')
+        i = j + 1
+    return ', '.join(out)
+
+
+def kontrola_dochadzky(doch, N):
+    """Podozrivé miesta v dochádzke. Vracia zoznam dict(meno, text, druh) – druh: 'chyba' / 'info'."""
+    out = []
+    sviatky = dni_pracovneho_pokoja(doch.rok)
+    m = doch.mesiac
+    for i, d in enumerate(doch.dates):
+        if d.weekday() >= 5:
+            continue
+        if d in sviatky and not doch.sviatok[i]:
+            out.append(dict(meno='', druh='chyba', text=f'{d.day}.{m}. je deň pracovného pokoja ({sviatky[d]}), '
+                                                         f'ale v riadku 9 dochádzky nie je „Sv“.'))
+        if doch.sviatok[i] and d not in sviatky:
+            out.append(dict(meno='', druh='chyba', text=f'{d.day}.{m}. je v riadku 9 označený ako sviatok („Sv“), '
+                                                         f'ale podľa zákona to nie je deň pracovného pokoja.'))
+    for meno, _, kody in doch.ludia:
+        z = N.zam.get(meno)
+        if z is None or z['typ'] == 'bez CP':
+            continue
+        ot = doch.nadcas.get(meno, [0.0] * doch.ndays)
+        nevyplnene = []
+        for i, d in enumerate(doch.dates):
+            c, o = kod(kody[i]), ot[i]
+            volno = d.weekday() >= 5 or doch.sviatok[i] or d in sviatky
+            dtxt = f'{d.day}.{m}. ({DNI_TYZDNA[d.weekday()]})'
+            h = f'{o:g}'.replace('.', ',')
+            if isinstance(c, str) and c in ABSENCIE and o > 0:
+                out.append(dict(meno=meno, druh='chyba', text=f'{dtxt}: nadčas {h} h, ale v dochádzke je „{c}“.'))
+            elif c in ('X', 'SK') and d.weekday() >= 5:
+                out.append(dict(meno=meno, druh='chyba', text=f'{dtxt}: zapísané „{c}“ na víkende – počíta sa ako celá zmena '
+                                                              f'(7:00–15:30 + nadčas). Ak robil len nadčas, nechaj deň prázdny.'))
+            elif c == '' and not volno:
+                if o > 0:
+                    out.append(dict(meno=meno, druh='chyba', text=f'{dtxt}: nadčas {h} h, ale chýba kód (X, SC…) – '
+                                                                  f'počíta sa len ako {h} h od 7:00.'))
+                else:
+                    nevyplnene.append(d.day)
+            if o > 0 and ((c in ('X', 'SK', 'SC') and o > 12) or (c in ('', 'SV') and o > 16)):
+                out.append(dict(meno=meno, druh='chyba', text=f'{dtxt}: neobvykle vysoký nadčas {h} h – skontroluj preklep.'))
+        if nevyplnene:
+            out.append(dict(meno=meno, druh='info', text=f'nevyplnené pracovné dni: {_rozsahy(nevyplnene)}'))
+    return out
+
+
+def _q(title):
+    return "'" + title.replace("'", "''") + "'"
+
+
+def pridaj_suhrn(wb, used, druh, doch, N):
+    """Súhrnný hárok na konci zošita – vzorce ťahajú hodnoty z hárkov ľudí (po ručnej úprave sa prepočíta)."""
+    from openpyxl.styles import Border, Side
+    ws = wb.create_sheet('Súhrn')
+    sad = N.sadzba(doch.dates[0])
+    mena = 'Kč' if druh == 'CZ' else '€'
+    if druh == 'SR':
+        pasma = [(sad[1], f'{sad[1]:.2f} €'.replace('.', ',')), (sad[2], f'{sad[2]:.2f} €'.replace('.', ',')),
+                 (sad[3], f'{sad[3]:.2f} €'.replace('.', ','))]
+        nadpis = 'Súhrn diét – tuzemské cesty (SR)'
+        dni_txt = 'Dni s diétou'
+    else:
+        pasma = [(sad[4] / 4, f'{sad[4] / 4:g} Kč'), (sad[4] / 2, f'{sad[4] / 2:g} Kč'), (sad[4], f'{sad[4]:g} Kč')]
+        nadpis = 'Súhrn diét – zahraničné cesty (ČR)'
+        dni_txt = 'Dni v ČR'
+    ws['A1'] = f'{nadpis} – {MESIACE[doch.mesiac - 1]} {doch.rok}'
+    ws['A1'].font = Font(bold=True, size=14, color='1F4E78')
+    ws['A2'] = f'Obdobie: {doch.mesiac:02d}/{doch.rok} | {druh}'
+    ws['A2'].font = Font(size=9, color='808080')
+    hdr = ['Meno', dni_txt, *[p[1] for p in pasma], f'Spolu {mena}']
+    thin = Side(style='thin', color='B7C3D0')
+    brd = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for c, v in enumerate(hdr, 1):
+        cell = ws.cell(4, c, v)
+        cell.font = Font(bold=True, color='FFFFFF')
+        cell.fill = PatternFill('solid', fgColor='1F4E78')
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = brd
+    ws.cell(3, 3, 'Počet dní v pásme').font = Font(italic=True, size=9, color='606060')
+    fmt = '#,##0.00" €"' if druh == 'SR' else '#,##0\\ "Kč"'
+    r = 5
+    for sh in used:
+        ref = _q(sh.title)
+        rng = f'{ref}!$T$7:$T$68'
+        ws.cell(r, 1, norm(sh['D3'].value) or sh.title)
+        ws.cell(r, 1).hyperlink = f"#{ref}!A1"
+        ws.cell(r, 1).font = Font(color='1F4E78', underline='single')
+        ws.cell(r, 2, f'=COUNTIF({rng},">0")')
+        for j, (val, _) in enumerate(pasma):
+            ws.cell(r, 3 + j, f'=COUNTIF({rng},{val:g})')
+        ws.cell(r, 6, f'={ref}!X79').number_format = fmt
+        for c in range(1, 7):
+            ws.cell(r, c).border = brd
+            if c > 1:
+                ws.cell(r, c).alignment = Alignment(horizontal='right' if c == 6 else 'center')
+        if (r - 5) % 2:
+            for c in range(1, 7):
+                ws.cell(r, c).fill = PatternFill('solid', fgColor='F2F6FA')
+        r += 1
+    ws.cell(r, 1, 'SPOLU').font = Font(bold=True)
+    for c in range(2, 7):
+        L = openpyxl.utils.get_column_letter(c)
+        cell = ws.cell(r, c, f'=SUM({L}5:{L}{r - 1})')
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal='right' if c == 6 else 'center')
+    for c in range(1, 7):
+        ws.cell(r, c).border = Border(top=Side(style='medium', color='1F4E78'), bottom=thin, left=thin, right=thin)
+        ws.cell(r, c).fill = PatternFill('solid', fgColor='E3EDF9')
+    ws.cell(r, 6).number_format = fmt
+    note = ws.cell(r + 2, 1, 'Hodnoty sa berú priamo z hárkov jednotlivých ľudí (stĺpec Stravné a riadok Doplatok). '
+                             'Po ručnej úprave času alebo sumy sa súhrn prepočíta sám.')
+    note.font = Font(size=9, italic=True, color='606060')
+    note.alignment = Alignment(wrap_text=True, vertical='top')
+    ws.merge_cells(start_row=r + 2, start_column=1, end_row=r + 2, end_column=6)
+    ws.row_dimensions[r + 2].height = 26
+    for c, w in zip('ABCDEF', (30, 13, 12, 12, 12, 16)):
+        ws.column_dimensions[c].width = w
+    ws.row_dimensions[4].height = 30
+    ws.freeze_panes = 'A5'
+    ws.page_setup.orientation = 'portrait'
+    ws.page_setup.paperSize = 9
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    from openpyxl.worksheet.properties import PageSetupProperties
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.print_options.horizontalCentered = True
+    ws.page_margins.left = ws.page_margins.right = 0.6
+    ws.page_margins.top = ws.page_margins.bottom = 0.7
+    ws.print_area = f'A1:F{r + 2}'
+    return ws
+
+
+def nacitaj_suhrn(path):
+    """Prečíta hárok Súhrn z finálneho (v Exceli uloženého) súboru – pre archív."""
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    if 'Súhrn' not in wb.sheetnames:
+        raise ValueError('V súbore nie je hárok „Súhrn“ – nahraj SR alebo ČR príkaz vytvorený touto aplikáciou.')
+    ws = wb['Súhrn']
+    rows = list(ws.iter_rows(min_row=1, max_row=200, max_col=6, values_only=True))
+    m = re.search(r'Obdobie:\s*(\d{2})/(\d{4})\s*\|\s*(SR|CZ)', str(rows[1][0] or ''))
+    if not m:
+        raise ValueError('Hárok „Súhrn“ nemá údaj o období – súbor nie je z tejto aplikácie.')
+    ludia = []
+    for row in rows[4:]:
+        meno = norm(row[0])
+        if not meno or meno == 'SPOLU':
+            if meno == 'SPOLU':
+                break
+            continue
+        if row[5] is None or row[1] is None:
+            raise ValueError('Súbor nemá vypočítané hodnoty – otvor ho v Exceli, ulož (Ctrl+S) a nahraj znova.')
+        ludia.append(dict(meno=meno, dni=int(row[1] or 0), spolu=round(float(row[5] or 0), 2)))
+    return dict(mesiac=int(m.group(1)), rok=int(m.group(2)), druh=m.group(3), ludia=ludia)
+
+
 def main(doch_path, out_dir=VYSTUP, N=None):
     os.makedirs(out_dir, exist_ok=True)
     if N is None:
@@ -598,6 +804,7 @@ def main(doch_path, out_dir=VYSTUP, N=None):
     d_first = dt.datetime.combine(first, dt.time())
     d_last = dt.datetime.combine(last, dt.time())
     sr_used, cz_used, prehlad = [], [], []
+    kontrola = kontrola_dochadzky(doch, N)
     used_titles = set()
 
     for meno, _, kody in doch.ludia:
@@ -716,6 +923,8 @@ def main(doch_path, out_dir=VYSTUP, N=None):
             del wb.defined_names['Excel_BuiltIn_Print_Area_1']
 
     finalize(sr_wb, sr_used)
+    if sr_used:
+        pridaj_suhrn(sr_wb, sr_used, 'SR', doch, N)
     out_sr = os.path.join(out_dir, f'SR_Cestovný príkaz_{mes_txt}_{stredisko}.xlsx')
     out_cz = os.path.join(out_dir, f'CR_Cestovný príkaz_{mes_txt}_{stredisko}.xlsx')
     out_k = os.path.join(out_dir, f'Kontrola_diet_{mes_txt}.xlsx')
@@ -726,6 +935,7 @@ def main(doch_path, out_dir=VYSTUP, N=None):
             if not cz_used:
                 print('ČR: tento mesiac nikto nebol v ČR – súbor sa nevytvára.')
                 continue
+            pridaj_suhrn(cz_wb, cz_used, 'CZ', doch, N)
         try:
             wb.save(path)
             saved.append(path)
@@ -758,6 +968,17 @@ def main(doch_path, out_dir=VYSTUP, N=None):
         s.cell(r, 8).number_format = '#,##0.00'
         s.cell(r, 10).number_format = '#,##0'
     s.cell(tr + 2, 1, 'ČR jednodňové cesty majú predvyplnené časy – po oprave podľa GPS sa suma v ČR príkaze prepočíta sama.')
+    kd = k.create_sheet('Kontrola dochádzky')
+    kd.append(['Meno', 'Zistenie'])
+    for c in kd[1]:
+        c.font = Font(bold=True, color='FFFFFF')
+        c.fill = PatternFill('solid', fgColor='1F4E78')
+    for x in kontrola or [dict(meno='', text='Bez zistení.', druh='info')]:
+        kd.append([x['meno'] or 'celá dochádzka', x['text']])
+        if x['druh'] == 'chyba':
+            kd.cell(kd.max_row, 2).font = Font(color='9C2A00')
+    kd.column_dimensions['A'].width = 26
+    kd.column_dimensions['B'].width = 110
     u = k.create_sheet('Upozornenia')
     u.append(['Upozornenie'])
     u['A1'].font = Font(bold=True)
@@ -778,7 +999,7 @@ def main(doch_path, out_dir=VYSTUP, N=None):
         for w in upoz:
             print('  •', w)
     return dict(rok=doch.rok, mesiac=doch.mesiac, mesiac_txt=f'{MESIACE[doch.mesiac - 1]} {doch.rok}',
-                files=saved, warnings=upoz, prehlad=prehlad,
+                files=saved, warnings=upoz, prehlad=prehlad, kontrola=kontrola,
                 sadzby=[N.sadzba(first)[j] for j in (1, 2, 3)])
 
 

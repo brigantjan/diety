@@ -5,6 +5,9 @@ Webová aplikácia (GitHub Pages), ktorá z mesačnej dochádzky vytvorí cestov
 - Prihlásenie: rovnaký e-mail a heslo ako Objednávky (Supabase projekt *dispecing-dev*).
 - Nastavenia (zamestnanci, sadzby, časy) sú v Supabase v tabuľke `diety_nastavenia`. Každá zmena sa automaticky zálohuje do `diety_historia`.
 - Výpočet beží priamo v prehliadači (Python cez Pyodide + openpyxl). Súbor dochádzky sa nikam neodosiela.
+- Pred výpočtom sa skontroluje dochádzka (nadčas pri absencii, X na víkende, nevyplnené dni, sviatky v riadku 9).
+- SR aj ČR príkaz majú na konci hárok **Súhrn** napojený vzorcami na hárky ľudí.
+- Každý spracovaný mesiac sa uloží do archívu (`diety_archiv`); finálne upravené súbory majú prednosť.
 - V repozitári **nie sú osobné údaje**. Šablóny obsahujú iba prázdne tlačivo VZOR.
 
 ## Súbory
@@ -18,6 +21,7 @@ Webová aplikácia (GitHub Pages), ktorá z mesačnej dochádzky vytvorí cestov
 | `sablony/` | prázdne tlačivá cestovného príkazu SR a ČR |
 | `wheels/` | knižnica openpyxl pre Python v prehliadači |
 | `sql/01_diety_tabulky.sql` | tabuľky a prístupové práva v Supabase (spúšťa sa raz) |
+| `sql/02_diety_archiv.sql` | archív mesiacov – súčty po ľuďoch (spúšťa sa raz) |
 
 ## Zverejnenie na GitHub Pages
 
