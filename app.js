@@ -20,7 +20,9 @@ const state = { user:null, data:null, version:null, py:null, api:null, pyPromise
 // Úložisko nastavení
 // ---------------------------------------------------------------------
 const LOCAL_MODE = !SUPABASE_URL;            // len na testovanie bez Supabase
-const sb = LOCAL_MODE ? null : window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// Schéma v databáze: v PROD 'diety' (vlastná schéma, oddelená od Dispečingu); bez nastavenia 'public' (pôvodné DEV)
+const DB_SCHEMA = (typeof SUPABASE_SCHEMA !== 'undefined' && SUPABASE_SCHEMA) ? SUPABASE_SCHEMA : 'public';
+const sb = LOCAL_MODE ? null : window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { db: { schema: DB_SCHEMA } });
 
 const Store = {
   async load() {
